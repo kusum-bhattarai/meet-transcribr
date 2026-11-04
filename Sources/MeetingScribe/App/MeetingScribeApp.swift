@@ -45,7 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard recorder.isRecording else { return .terminateNow }
         Log.app.notice("Quit while recording; saving transcript first")
         Task {
-            await recorder.finishRecording(reveal: false)
+            await recorder.finishRecording(interactive: false)
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
@@ -104,7 +104,11 @@ private struct StatusRow: View {
                     .foregroundStyle(.secondary)
             case .finishing: Text("Finishing transcript…")
             case .summarizing: Text("Writing notes…")
-            case .saved: Text("Saved")
+            case .saved:
+                Text("Saved")
+                if let problem = recorder.notesProblem {
+                    Text("· \(problem)").font(.caption).foregroundStyle(.orange).lineLimit(2)
+                }
             case .failed(let reason):
                 Text(reason).foregroundStyle(.red).textSelection(.enabled)
             }
@@ -201,6 +205,9 @@ private struct ActionRow: View {
                 Button("Discard", role: .destructive) { recorder.discard() }
             case .saved:
                 Button("Show in Finder") { recorder.revealSaved() }
+                if recorder.notesProblem != nil {
+                    Button("Retry notes") { recorder.retryNotes() }
+                }
                 Button("Start recording") { recorder.start() }
             case .preparing:
                 Button("Start recording") {}.disabled(true)

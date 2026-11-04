@@ -94,6 +94,11 @@ final class TranscriptStore {
         return out
     }
 
+    /// What the summarizer reads: `Speaker: text` per line, no timestamps or markup.
+    var summarizerText: String {
+        working.map { "\($0.speaker.label): \($0.text)" }.joined(separator: "\n")
+    }
+
     private static var formatters: [String: DateFormatter] = [:]
 
     static func format(_ date: Date, _ pattern: String) -> String {

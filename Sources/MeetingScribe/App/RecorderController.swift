@@ -21,6 +21,9 @@ final class RecorderController {
     private(set) var startDate: Date?
     /// Non-fatal problem worth showing while recording (e.g. mic transcription unavailable).
     private(set) var warning: String?
+    /// Why the last meeting's notes are missing or partial, shown in the Saved state.
+    private(set) var notesProblem: String?
+    private var lastSaved: (folder: URL, title: String)?
     let store = TranscriptStore()
 
     var title = ""
@@ -46,7 +49,7 @@ final class RecorderController {
 
     func stop() {
         guard isRecording else { return }
-        Task { await finishRecording(reveal: true) }
+        Task { await finishRecording(interactive: true) }
     }
 
     func discard() {
@@ -67,6 +70,8 @@ final class RecorderController {
         state = .preparing
         store.reset()
         warning = nil
+        notesProblem = nil
+        lastSaved = nil
         do {
             let locale = try await LiveTranscriber.prepare()
             if captureMicrophone {
@@ -119,8 +124,9 @@ final class RecorderController {
         microphone = mic
     }
 
-    /// Stops capture, flushes both transcribers and saves. Also used when quitting.
-    func finishRecording(reveal: Bool) async {
+    /// Stops capture, flushes both transcribers, saves the transcript, then writes notes.
+    /// When quitting (`interactive == false`) notes are skipped so the app exits promptly.
+    func finishRecording(interactive: Bool) async {
         guard isRecording else { return }
         Log.app.info("Stop requested")
         state = .finishing
@@ -136,22 +142,65 @@ final class RecorderController {
 
         let start = startDate ?? Date()
         startDate = nil
+        let entered = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayTitle = entered.isEmpty ? "Meeting \(TranscriptStore.format(start, "yyyy-MM-dd HH:mm"))" : entered
+
+        // The transcript is written before the summarizer runs, so nothing below can lose it.
+        let folder: URL
         do {
-            let folder = try saveTranscript(start: start, end: Date())
-            state = .saved(folder)
-            if reveal { revealSaved() }
+            folder = try saveTranscript(title: displayTitle, start: start, end: Date())
         } catch {
             Log.app.error("Saving transcript failed: \(error.localizedDescription, privacy: .public)")
             state = .failed("Couldn't save the transcript: \(error.localizedDescription)")
+            return
+        }
+        lastSaved = (folder, displayTitle)
+
+        if interactive {
+            await writeNotes()
+        } else {
+            writeNotesFile(NotesOutcome(notes: nil, problem: "MeetingScribe was quit while recording, so notes were skipped.",
+                                        failedChunks: 0, totalChunks: 0))
+        }
+        state = .saved(folder)
+        if interactive { revealSaved() }
+    }
+
+    /// Re-runs notes for the last saved meeting, e.g. after a thermal or availability deferral.
+    func retryNotes() {
+        guard case .saved = state, lastSaved != nil else { return }
+        Task {
+            let saved = state
+            await writeNotes(deferIfConstrained: false)
+            state = saved
+        }
+    }
+
+    private func writeNotes(deferIfConstrained: Bool = true) async {
+        state = .summarizing
+        let outcome = await NoteMaker.makeNotes(from: store.summarizerText, deferIfConstrained: deferIfConstrained)
+        writeNotesFile(outcome)
+    }
+
+    private func writeNotesFile(_ outcome: NotesOutcome) {
+        guard let lastSaved else { return }
+        notesProblem = outcome.problem
+            ?? (outcome.failedChunks > 0 ? "\(outcome.failedChunks) of \(outcome.totalChunks) transcript parts couldn't be summarized." : nil)
+        let url = lastSaved.folder.appending(path: "notes.md")
+        do {
+            try NoteMaker.markdown(outcome, title: lastSaved.title).write(to: url, atomically: true, encoding: .utf8)
+            Log.notes.info("Saved notes to \(url.path, privacy: .public)")
+        } catch {
+            Log.notes.error("Writing notes.md failed: \(error.localizedDescription, privacy: .public)")
+            notesProblem = "Couldn't write notes.md: \(error.localizedDescription)"
         }
     }
 
     // MARK: - Saving
 
     /// Writes `~/Documents/MeetingScribe/<yyyy-MM-dd HHmm> <title>/transcript.md`.
-    private func saveTranscript(start: Date, end: Date) throws -> URL {
+    private func saveTranscript(title displayTitle: String, start: Date, end: Date) throws -> URL {
         let entered = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let displayTitle = entered.isEmpty ? "Meeting \(TranscriptStore.format(start, "yyyy-MM-dd HH:mm"))" : entered
         let folderTitle = sanitized(entered.isEmpty ? "Meeting" : entered)
 
         let root = URL.documentsDirectory.appending(path: "MeetingScribe", directoryHint: .isDirectory)

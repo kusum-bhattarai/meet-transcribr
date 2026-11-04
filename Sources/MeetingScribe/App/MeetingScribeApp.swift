@@ -20,6 +20,11 @@ struct PanelView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             StatusRow(recorder: recorder)
+            if let warning = recorder.warning, recorder.isRecording {
+                Label(warning, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
             if recorder.canStart {
                 IdleControls(recorder: recorder)
             }

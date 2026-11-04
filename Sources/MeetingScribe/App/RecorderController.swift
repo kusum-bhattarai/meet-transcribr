@@ -19,6 +19,8 @@ enum RecorderState: Equatable {
 final class RecorderController {
     private(set) var state: RecorderState = .idle
     private(set) var startDate: Date?
+    /// Non-fatal problem worth showing while recording (e.g. mic transcription unavailable).
+    private(set) var warning: String?
     let store = TranscriptStore()
 
     var title = ""
@@ -26,6 +28,8 @@ final class RecorderController {
 
     private var systemTap: SystemAudioTap?
     private var themTranscriber: LiveTranscriber?
+    private var microphone: MicrophoneCapture?
+    private var meTranscriber: LiveTranscriber?
 
     var isRecording: Bool { state == .recording }
     var canStart: Bool {
@@ -62,14 +66,22 @@ final class RecorderController {
         Log.app.info("Start requested (mic: \(self.captureMicrophone))")
         state = .preparing
         store.reset()
+        warning = nil
         do {
             let locale = try await LiveTranscriber.prepare()
+            if captureMicrophone {
+                try await MicrophoneCapture.requestAccess()
+            }
 
             let them = LiveTranscriber(speaker: .others, locale: locale)
             try await them.start { [store] text, isFinal in
                 store.apply(text, from: .others, isFinal: isFinal)
             }
             themTranscriber = them
+
+            if captureMicrophone {
+                await startMicrophoneSession(locale: locale)
+            }
 
             let tap = SystemAudioTap()
             try tap.start { buffer in them.append(buffer) }
@@ -82,14 +94,41 @@ final class RecorderController {
         }
     }
 
+    /// A second concurrent SpeechAnalyzer may be refused. Recording continues on system audio
+    /// alone rather than failing the meeting.
+    private func startMicrophoneSession(locale: Locale) async {
+        let me = LiveTranscriber(speaker: .me, locale: locale)
+        do {
+            try await me.start { [store] text, isFinal in
+                store.apply(text, from: .me, isFinal: isFinal)
+            }
+        } catch {
+            Log.speech.fault("Second SpeechAnalyzer session refused (\(error.localizedDescription, privacy: .public)); continuing with system audio only")
+            warning = "Your microphone isn't being transcribed: the speech engine refused a second session."
+            return
+        }
+        let mic = MicrophoneCapture()
+        do {
+            try mic.start { buffer in me.append(buffer) }
+        } catch {
+            await me.cancel()
+            warning = error.localizedDescription
+            return
+        }
+        meTranscriber = me
+        microphone = mic
+    }
+
     private func stopRecording() async {
         Log.app.info("Stop requested")
         state = .finishing
-        // Stop capture first so nothing is appended after the stream finishes.
-        systemTap?.stop()
-        systemTap = nil
-        await themTranscriber?.finish()
+        // Stop capture first so nothing is appended after the streams finish.
+        stopCapture()
+        async let them: Void? = themTranscriber?.finish()
+        async let me: Void? = meTranscriber?.finish()
+        _ = await (them, me)
         themTranscriber = nil
+        meTranscriber = nil
         Log.app.info("Transcript finished: \(self.store.segments.count) segments, \(self.store.wordCount) words")
 
         let start = startDate ?? Date()
@@ -142,11 +181,19 @@ final class RecorderController {
         state = .idle
     }
 
-    private func releaseResources() async {
+    private func stopCapture() {
         systemTap?.stop()
         systemTap = nil
+        microphone?.stop()
+        microphone = nil
+    }
+
+    private func releaseResources() async {
+        stopCapture()
         await themTranscriber?.cancel()
+        await meTranscriber?.cancel()
         themTranscriber = nil
+        meTranscriber = nil
         startDate = nil
     }
 

@@ -21,6 +21,10 @@ extension AVAudioPCMBuffer {
         return copy
     }
 
+    func deepCopy() -> AVAudioPCMBuffer? {
+        .copying(audioBufferList, format: format)
+    }
+
     /// Root-mean-square level across all channels (Float32 only; other formats report 0).
     var rms: Float {
         guard format.commonFormat == .pcmFormatFloat32, frameLength > 0 else { return 0 }

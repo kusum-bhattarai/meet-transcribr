@@ -56,6 +56,26 @@ final class TranscriptStore {
         }
     }
 
+    /// The artifact of record: title, recording date, one bolded `[HH:mm:ss] Speaker:` per paragraph.
+    func markdown(title: String, start: Date, end: Date) -> String {
+        var out = "# \(title)\n\n"
+        out += "Recorded \(Self.format(start, "yyyy-MM-dd HH:mm"))–\(Self.format(end, "HH:mm"))\n\n"
+        if segments.isEmpty {
+            out += "_No speech was transcribed._\n"
+        }
+        for segment in segments {
+            out += "**[\(Self.format(segment.timestamp, "HH:mm:ss"))] \(segment.speaker.label):** \(segment.text)\n\n"
+        }
+        return out
+    }
+
+    static func format(_ date: Date, _ pattern: String) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = pattern
+        return formatter.string(from: date)
+    }
+
     func reset() {
         segments = []
         volatile = [:]

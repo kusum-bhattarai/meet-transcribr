@@ -51,8 +51,8 @@ final class RecorderController {
     }
 
     func revealSaved() {
-        if case .saved(let url) = state {
-            NSWorkspace.shared.activateFileViewerSelecting([url])
+        if case .saved(let folder) = state {
+            NSWorkspace.shared.activateFileViewerSelecting([folder.appending(path: "transcript.md")])
         }
     }
 
@@ -90,9 +90,49 @@ final class RecorderController {
         systemTap = nil
         await themTranscriber?.finish()
         themTranscriber = nil
-        startDate = nil
         Log.app.info("Transcript finished: \(self.store.segments.count) segments, \(self.store.wordCount) words")
-        state = .idle
+
+        let start = startDate ?? Date()
+        startDate = nil
+        do {
+            let folder = try saveTranscript(start: start, end: Date())
+            state = .saved(folder)
+            revealSaved()
+        } catch {
+            Log.app.error("Saving transcript failed: \(error.localizedDescription, privacy: .public)")
+            state = .failed("Couldn't save the transcript: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Saving
+
+    /// Writes `~/Documents/MeetingScribe/<yyyy-MM-dd HHmm> <title>/transcript.md`.
+    private func saveTranscript(start: Date, end: Date) throws -> URL {
+        let entered = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayTitle = entered.isEmpty ? "Meeting \(TranscriptStore.format(start, "yyyy-MM-dd HH:mm"))" : entered
+        let folderTitle = sanitized(entered.isEmpty ? "Meeting" : entered)
+
+        let root = URL.documentsDirectory.appending(path: "MeetingScribe", directoryHint: .isDirectory)
+        let base = "\(TranscriptStore.format(start, "yyyy-MM-dd HHmm")) \(folderTitle)"
+        var folder = root.appending(path: base, directoryHint: .isDirectory)
+        var suffix = 2
+        while FileManager.default.fileExists(atPath: folder.path) {
+            folder = root.appending(path: "\(base) \(suffix)", directoryHint: .isDirectory)
+            suffix += 1
+        }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+
+        let transcript = folder.appending(path: "transcript.md")
+        try store.markdown(title: displayTitle, start: start, end: end)
+            .write(to: transcript, atomically: true, encoding: .utf8)
+        Log.app.info("Saved transcript to \(transcript.path, privacy: .public)")
+        return folder
+    }
+
+    private func sanitized(_ title: String) -> String {
+        let cleaned = title.replacingOccurrences(of: "/", with: "").replacingOccurrences(of: ":", with: "")
+            .trimmingCharacters(in: .whitespaces)
+        return cleaned.isEmpty ? "Meeting" : cleaned
     }
 
     private func discardRecording() async {

@@ -34,6 +34,7 @@ final class LiveTranscriber {
 
     // Touched only on the capture queue.
     private var converter: AVAudioConverter?
+    private let gate = SpeechGate()
     private var buffersFed = 0
     private var finalResults = 0
 
@@ -98,7 +99,9 @@ final class LiveTranscriber {
         }
         analyzerFormat = format
 
-        let analyzer = SpeechAnalyzer(modules: [module])
+        // Unload the model as soon as the session ends; nothing stays resident between meetings.
+        let analyzer = SpeechAnalyzer(modules: [module],
+                                      options: .init(priority: .userInitiated, modelRetention: .whileInUse))
         let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
         self.analyzer = analyzer
         self.continuation = continuation
@@ -121,12 +124,35 @@ final class LiveTranscriber {
         Log.speech.info("\(speaker.label, privacy: .public) analyzer started, format: \(format.description, privacy: .public)")
     }
 
-    /// Converts to the analyzer's format and yields. An unconverted buffer is silently ignored
-    /// by the analyzer, so conversion is mandatory.
+    /// Gates out silence, converts to the analyzer's format and yields. An unconverted buffer
+    /// is silently ignored by the analyzer, so conversion is mandatory.
     func append(_ buffer: AVAudioPCMBuffer) {
-        guard let continuation, let converted = convert(buffer) else { return }
-        buffersFed += 1
-        continuation.yield(AnalyzerInput(buffer: converted))
+        guard let continuation else { return }
+        let (buffers, closed) = gate.process(buffer)
+        for buffer in buffers {
+            guard let converted = convert(buffer) else { continue }
+            buffersFed += 1
+            continuation.yield(AnalyzerInput(buffer: converted))
+        }
+        // The analyzer ends an utterance when it hears a pause, and the gate removes pauses.
+        // A short synthetic silence lets it finalize now instead of at the next speech.
+        if closed, let silence = makeSilence() {
+            Log.speech.debug("\(self.speaker.label, privacy: .public) end of utterance")
+            continuation.yield(AnalyzerInput(buffer: silence))
+        }
+    }
+
+    private static let endOfUtteranceSilence: TimeInterval = 1.5
+
+    private func makeSilence() -> AVAudioPCMBuffer? {
+        guard let format = analyzerFormat else { return nil }
+        let frames = AVAudioFrameCount(format.sampleRate * Self.endOfUtteranceSilence)
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else { return nil }
+        buffer.frameLength = frames
+        for b in UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList) {
+            if let data = b.mData { memset(data, 0, Int(b.mDataByteSize)) }
+        }
+        return buffer
     }
 
     /// Flushes volatile text into final results and waits for the last of them.
@@ -154,7 +180,7 @@ final class LiveTranscriber {
         continuation = nil
         resultsTask = nil
         converter = nil
-        Log.speech.info("\(self.speaker.label, privacy: .public) analyzer released: fed \(self.buffersFed) buffers, \(self.finalResults) final results")
+        Log.speech.info("\(self.speaker.label, privacy: .public) analyzer released: \(self.gate.summary, privacy: .public), fed \(self.buffersFed), \(self.finalResults) final results")
     }
 
     // MARK: - Conversion

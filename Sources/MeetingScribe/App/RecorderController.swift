@@ -129,6 +129,7 @@ final class RecorderController {
         _ = await (them, me)
         themTranscriber = nil
         meTranscriber = nil
+        store.publishNow()
         Log.app.info("Transcript finished: \(self.store.segments.count) segments, \(self.store.wordCount) words")
 
         let start = startDate ?? Date()

@@ -17,6 +17,7 @@ enum MicrophoneError: LocalizedError {
 /// The user's side of the call, via an AVAudioEngine input tap.
 final class MicrophoneCapture {
     private var engine: AVAudioEngine?
+    private var meter = LevelMeter(name: "Microphone")
 
     static func requestAccess() async throws {
         guard await AVCaptureDevice.requestAccess(for: .audio) else {
@@ -34,9 +35,12 @@ final class MicrophoneCapture {
             throw MicrophoneError.noInputDevice
         }
 
+        meter = LevelMeter(name: "Microphone")
+        let meter = meter
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { buffer, _ in
             // The engine may reuse this buffer after the block returns.
             guard let copy = buffer.deepCopy() else { return }
+            meter.record(copy)
             onBuffer(copy)
         }
         engine.prepare()
@@ -48,7 +52,8 @@ final class MicrophoneCapture {
             throw error
         }
         self.engine = engine
-        Log.audio.info("Microphone started, format: \(format.description, privacy: .public)")
+        let device = AVCaptureDevice.default(for: .audio)?.localizedName ?? "unknown"
+        Log.audio.info("Microphone started on \(device, privacy: .public), format: \(format.description, privacy: .public)")
     }
 
     func stop() {
@@ -56,6 +61,6 @@ final class MicrophoneCapture {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         self.engine = nil
-        Log.audio.info("Microphone stopped")
+        Log.audio.info("Microphone stopped after \(self.meter.bufferCount) buffers")
     }
 }

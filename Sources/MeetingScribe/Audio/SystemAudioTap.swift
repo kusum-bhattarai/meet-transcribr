@@ -24,9 +24,7 @@ final class SystemAudioTap {
     private var ioProcID: AudioDeviceIOProcID?
     private(set) var format: AVAudioFormat?
 
-    // Diagnostics, touched only on `queue`.
-    private var bufferCount = 0
-    private var peakRMS: Float = 0
+    private var meter = LevelMeter(name: "System audio")
 
     init(excludedBundleIDs: [String] = SystemAudioTap.defaultExcludedBundleIDs) {
         self.excludedBundleIDs = excludedBundleIDs
@@ -59,7 +57,7 @@ final class SystemAudioTap {
         if tapID != kAudioObjectUnknown {
             check(AudioHardwareDestroyProcessTap(tapID), "AudioHardwareDestroyProcessTap")
             tapID = AudioObjectID(kAudioObjectUnknown)
-            Log.audio.info("System audio tap stopped after \(self.bufferCount) buffers")
+            Log.audio.info("System audio tap stopped after \(self.meter.bufferCount) buffers")
         }
     }
 
@@ -111,25 +109,15 @@ final class SystemAudioTap {
 
     private func startIO(onBuffer: @escaping (AVAudioPCMBuffer) -> Void) throws {
         guard let format else { return }
-        bufferCount = 0
-        peakRMS = 0
-        try require(AudioDeviceCreateIOProcIDWithBlock(&ioProcID, aggregateID, queue) { [weak self] _, input, _, _, _ in
+        meter = LevelMeter(name: "System audio")
+        let meter = meter
+        try require(AudioDeviceCreateIOProcIDWithBlock(&ioProcID, aggregateID, queue) { _, input, _, _, _ in
             guard let buffer = AVAudioPCMBuffer.copying(input, format: format) else { return }
-            self?.recordStats(buffer)
+            meter.record(buffer)
             onBuffer(buffer)
         }, "AudioDeviceCreateIOProcIDWithBlock")
         try require(AudioDeviceStart(aggregateID, ioProcID), "AudioDeviceStart")
         Log.audio.info("System audio tap started")
-    }
-
-    /// Logs every ~4 s so an all-silent stream (usually a denied permission) is visible.
-    private func recordStats(_ buffer: AVAudioPCMBuffer) {
-        bufferCount += 1
-        peakRMS = max(peakRMS, buffer.rms)
-        if bufferCount % 50 == 0 {
-            Log.audio.debug("System audio: \(self.bufferCount) buffers, peak RMS \(self.peakRMS, format: .fixed(precision: 4))")
-            peakRMS = 0
-        }
     }
 
     // MARK: - Lookups

@@ -34,6 +34,8 @@ final class LiveTranscriber {
 
     // Touched only on the capture queue.
     private var converter: AVAudioConverter?
+    private var buffersFed = 0
+    private var finalResults = 0
 
     init(speaker: Speaker, locale: Locale) {
         self.speaker = speaker
@@ -69,9 +71,10 @@ final class LiveTranscriber {
         }
 
         if let request = try await AssetInventory.assetInstallationRequest(supporting: [makeModule(locale: locale)]) {
-            Log.speech.info("Downloading speech model for \(locale.identifier, privacy: .public)")
+            let started = Date()
+            Log.speech.info("Installing speech assets for \(locale.identifier, privacy: .public)")
             try await request.downloadAndInstall()
-            Log.speech.info("Speech model installed")
+            Log.speech.info("Speech assets ready in \(Date().timeIntervalSince(started), format: .fixed(precision: 1)) s")
         }
         return locale
     }
@@ -106,6 +109,7 @@ final class LiveTranscriber {
                 for try await result in module.results {
                     let text = String(result.text.characters)
                     let isFinal = result.isFinal
+                    if isFinal { self.finalResults += 1 }
                     await onResult(text, isFinal)
                 }
             } catch {
@@ -121,6 +125,7 @@ final class LiveTranscriber {
     /// by the analyzer, so conversion is mandatory.
     func append(_ buffer: AVAudioPCMBuffer) {
         guard let continuation, let converted = convert(buffer) else { return }
+        buffersFed += 1
         continuation.yield(AnalyzerInput(buffer: converted))
     }
 
@@ -149,7 +154,7 @@ final class LiveTranscriber {
         continuation = nil
         resultsTask = nil
         converter = nil
-        Log.speech.info("\(self.speaker.label, privacy: .public) analyzer released")
+        Log.speech.info("\(self.speaker.label, privacy: .public) analyzer released: fed \(self.buffersFed) buffers, \(self.finalResults) final results")
     }
 
     // MARK: - Conversion

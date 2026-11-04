@@ -23,7 +23,7 @@ struct PanelView: View {
             if recorder.canStart {
                 IdleControls(recorder: recorder)
             }
-            TranscriptView()
+            TranscriptView(store: recorder.store)
                 .frame(width: 380, height: 260)
             ActionRow(recorder: recorder)
         }
@@ -44,6 +44,8 @@ private struct StatusRow: View {
                 if let start = recorder.startDate {
                     ElapsedLabel(start: start)
                 }
+                Text("· \(recorder.store.wordCount) words")
+                    .foregroundStyle(.secondary)
             case .finishing: Text("Finishing transcript…")
             case .summarizing: Text("Writing notes…")
             case .saved: Text("Saved")
@@ -94,14 +96,40 @@ private struct IdleControls: View {
 }
 
 struct TranscriptView: View {
+    let store: TranscriptStore
+
     var body: some View {
-        ScrollView {
-            Text("Transcript will appear here.")
-                .foregroundStyle(.tertiary)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 6) {
+                    if store.segments.isEmpty && store.volatile.isEmpty {
+                        Text("Transcript will appear here.")
+                            .foregroundStyle(.tertiary)
+                    }
+                    ForEach(store.segments) { segment in
+                        line(segment.speaker, segment.text)
+                    }
+                    ForEach([Speaker.others, .me], id: \.self) { speaker in
+                        if let text = store.volatile[speaker], !text.isEmpty {
+                            line(speaker, text).foregroundStyle(.tertiary)
+                        }
+                    }
+                    Color.clear.frame(height: 1).id(bottomID)
+                }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+            }
+            .onChange(of: store.segments.count) { proxy.scrollTo(bottomID, anchor: .bottom) }
+            .onChange(of: store.volatile) { proxy.scrollTo(bottomID, anchor: .bottom) }
         }
         .padding(8)
         .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    private let bottomID = "bottom"
+
+    private func line(_ speaker: Speaker, _ text: String) -> Text {
+        Text("\(Text("\(speaker.label):").bold()) \(text)")
     }
 }
 

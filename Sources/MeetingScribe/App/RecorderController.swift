@@ -19,11 +19,13 @@ enum RecorderState: Equatable {
 final class RecorderController {
     private(set) var state: RecorderState = .idle
     private(set) var startDate: Date?
-
-    private var systemTap: SystemAudioTap?
+    let store = TranscriptStore()
 
     var title = ""
     var captureMicrophone = false
+
+    private var systemTap: SystemAudioTap?
+    private var themTranscriber: LiveTranscriber?
 
     var isRecording: Bool { state == .recording }
     var canStart: Bool {
@@ -35,49 +37,82 @@ final class RecorderController {
 
     func start() {
         guard canStart else { return }
-        Log.app.info("Start requested (mic: \(self.captureMicrophone))")
-        let tap = SystemAudioTap()
-        do {
-            try tap.start { _ in }
-        } catch {
-            fail(error)
-            return
-        }
-        systemTap = tap
-        startDate = Date()
-        state = .recording
+        Task { await startRecording() }
     }
 
     func stop() {
         guard isRecording else { return }
-        Log.app.info("Stop requested")
-        state = .finishing
-        releaseResources()
-        state = .idle
+        Task { await stopRecording() }
     }
 
     func discard() {
         guard isRecording else { return }
-        Log.app.info("Recording discarded")
-        releaseResources()
-        state = .idle
-    }
-
-    private func releaseResources() {
-        systemTap?.stop()
-        systemTap = nil
-        startDate = nil
-    }
-
-    private func fail(_ error: Error) {
-        Log.app.error("Failed: \(error.localizedDescription, privacy: .public)")
-        releaseResources()
-        state = .failed(error.localizedDescription)
+        Task { await discardRecording() }
     }
 
     func revealSaved() {
         if case .saved(let url) = state {
             NSWorkspace.shared.activateFileViewerSelecting([url])
         }
+    }
+
+    // MARK: - Lifecycle
+
+    private func startRecording() async {
+        Log.app.info("Start requested (mic: \(self.captureMicrophone))")
+        state = .preparing
+        store.reset()
+        do {
+            let locale = try await LiveTranscriber.prepare()
+
+            let them = LiveTranscriber(speaker: .others, locale: locale)
+            try await them.start { [store] text, isFinal in
+                store.apply(text, from: .others, isFinal: isFinal)
+            }
+            themTranscriber = them
+
+            let tap = SystemAudioTap()
+            try tap.start { buffer in them.append(buffer) }
+            systemTap = tap
+
+            startDate = Date()
+            state = .recording
+        } catch {
+            await fail(error)
+        }
+    }
+
+    private func stopRecording() async {
+        Log.app.info("Stop requested")
+        state = .finishing
+        // Stop capture first so nothing is appended after the stream finishes.
+        systemTap?.stop()
+        systemTap = nil
+        await themTranscriber?.finish()
+        themTranscriber = nil
+        startDate = nil
+        Log.app.info("Transcript finished: \(self.store.segments.count) segments, \(self.store.wordCount) words")
+        state = .idle
+    }
+
+    private func discardRecording() async {
+        Log.app.info("Recording discarded")
+        await releaseResources()
+        store.reset()
+        state = .idle
+    }
+
+    private func releaseResources() async {
+        systemTap?.stop()
+        systemTap = nil
+        await themTranscriber?.cancel()
+        themTranscriber = nil
+        startDate = nil
+    }
+
+    private func fail(_ error: Error) async {
+        Log.app.error("Failed: \(error.localizedDescription, privacy: .public)")
+        await releaseResources()
+        state = .failed(error.localizedDescription)
     }
 }

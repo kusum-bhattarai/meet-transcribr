@@ -20,6 +20,8 @@ final class RecorderController {
     private(set) var state: RecorderState = .idle
     private(set) var startDate: Date?
 
+    private var systemTap: SystemAudioTap?
+
     var title = ""
     var captureMicrophone = false
 
@@ -34,6 +36,14 @@ final class RecorderController {
     func start() {
         guard canStart else { return }
         Log.app.info("Start requested (mic: \(self.captureMicrophone))")
+        let tap = SystemAudioTap()
+        do {
+            try tap.start { _ in }
+        } catch {
+            fail(error)
+            return
+        }
+        systemTap = tap
         startDate = Date()
         state = .recording
     }
@@ -42,15 +52,27 @@ final class RecorderController {
         guard isRecording else { return }
         Log.app.info("Stop requested")
         state = .finishing
-        startDate = nil
+        releaseResources()
         state = .idle
     }
 
     func discard() {
         guard isRecording else { return }
         Log.app.info("Recording discarded")
-        startDate = nil
+        releaseResources()
         state = .idle
+    }
+
+    private func releaseResources() {
+        systemTap?.stop()
+        systemTap = nil
+        startDate = nil
+    }
+
+    private func fail(_ error: Error) {
+        Log.app.error("Failed: \(error.localizedDescription, privacy: .public)")
+        releaseResources()
+        state = .failed(error.localizedDescription)
     }
 
     func revealSaved() {

@@ -2,15 +2,66 @@ import SwiftUI
 
 @main
 struct MeetingScribeApp: App {
-    @State private var recorder = RecorderController()
+    @NSApplicationDelegateAdaptor private var delegate: AppDelegate
 
     var body: some Scene {
         MenuBarExtra {
-            PanelView(recorder: recorder)
+            PanelView(recorder: delegate.recorder)
         } label: {
-            Image(systemName: recorder.isRecording ? "record.circle.fill" : "waveform")
+            Image(systemName: delegate.recorder.isRecording ? "record.circle.fill" : "waveform")
         }
         .menuBarExtraStyle(.window)
+    }
+}
+
+/// Guarantees a recording is never stranded: the menu-bar item can be hidden behind the notch,
+/// so relaunching opens the panel in a window, and quitting (or SIGTERM) saves first.
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    let recorder = RecorderController()
+    private var window: NSWindow?
+    private var signalSources: [DispatchSourceSignal] = []
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        for sig in [SIGTERM, SIGINT] {
+            signal(sig, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            source.setEventHandler {
+                Log.app.notice("Signal \(sig) received; quitting via normal termination")
+                NSApplication.shared.terminate(nil)
+            }
+            source.resume()
+            signalSources.append(source)
+        }
+    }
+
+    /// `open build/MeetingScribe.app` on a running instance lands here.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showWindow()
+        return false
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard recorder.isRecording else { return .terminateNow }
+        Log.app.notice("Quit while recording; saving transcript first")
+        Task {
+            await recorder.finishRecording(reveal: false)
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
+    private func showWindow() {
+        if window == nil {
+            let window = NSWindow(contentViewController: NSHostingController(rootView: PanelView(recorder: recorder)))
+            window.title = "MeetingScribe"
+            window.styleMask = [.titled, .closable]
+            window.isReleasedWhenClosed = false
+            self.window = window
+        }
+        window?.center()
+        window?.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate()
     }
 }
 

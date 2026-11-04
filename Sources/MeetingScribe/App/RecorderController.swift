@@ -46,7 +46,7 @@ final class RecorderController {
 
     func stop() {
         guard isRecording else { return }
-        Task { await stopRecording() }
+        Task { await finishRecording(reveal: true) }
     }
 
     func discard() {
@@ -119,7 +119,9 @@ final class RecorderController {
         microphone = mic
     }
 
-    private func stopRecording() async {
+    /// Stops capture, flushes both transcribers and saves. Also used when quitting.
+    func finishRecording(reveal: Bool) async {
+        guard isRecording else { return }
         Log.app.info("Stop requested")
         state = .finishing
         // Stop capture first so nothing is appended after the streams finish.
@@ -137,7 +139,7 @@ final class RecorderController {
         do {
             let folder = try saveTranscript(start: start, end: Date())
             state = .saved(folder)
-            revealSaved()
+            if reveal { revealSaved() }
         } catch {
             Log.app.error("Saving transcript failed: \(error.localizedDescription, privacy: .public)")
             state = .failed("Couldn't save the transcript: \(error.localizedDescription)")
